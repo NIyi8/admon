@@ -84,11 +84,51 @@ def install_python_deps() -> None:
 
 # ── Step 2 — Generate voiceover ────────────────────────────────────────────────
 
-def generate_voiceover() -> bool:
-    """Returns True if audio was generated successfully."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def _script_to_wav(wav_out: Path) -> bool:
+    """Write FULL_SCRIPT to a wav file. Returns True on success."""
+    script_file = OUTPUT_DIR / "_tts_script.txt"
+    script_file.write_text(FULL_SCRIPT.replace("'", "'").replace("—", "..."))
 
-    # Try gTTS first
+    # 1. espeak-ng CLI (most reliable in restricted environments)
+    if require("espeak-ng"):
+        try:
+            subprocess.run(
+                [
+                    "espeak-ng", "-v", "en-gb-x-rp",
+                    "-s", "195", "-p", "48", "-g", "2",
+                    "-f", str(script_file),
+                    "-w", str(wav_out),
+                ],
+                check=True, capture_output=True,
+            )
+            if wav_out.exists() and wav_out.stat().st_size > 1000:
+                return True
+        except Exception as e:
+            print(f"  espeak-ng failed: {e}")
+
+    # 2. pyttsx3 (wraps espeak-ng or platform TTS)
+    try:
+        pip(["pyttsx3"])
+        import pyttsx3  # type: ignore
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 170)
+        engine.setProperty("volume", 1.0)
+        engine.save_to_file(FULL_SCRIPT, str(wav_out))
+        engine.runAndWait()
+        if wav_out.exists() and wav_out.stat().st_size > 1000:
+            return True
+    except Exception as e:
+        print(f"  pyttsx3 failed: {e}")
+
+    return False
+
+
+def generate_voiceover() -> bool:
+    """Generates voiceover MP3 timed to match the 52-second video."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    VIDEO_DURATION = 52.05  # seconds — must match durationInFrames/fps in Root.tsx
+
+    # 1. Try gTTS (Google, needs internet)
     try:
         from gtts import gTTS  # type: ignore
         print("\n[2/4] Generating voiceover with gTTS …")
@@ -99,36 +139,54 @@ def generate_voiceover() -> bool:
     except Exception as e:
         print(f"  gTTS failed: {e}")
 
-    # Fallback: pyttsx3
-    try:
-        pip(["pyttsx3"])
-        import pyttsx3  # type: ignore
-        print("\n[2/4] Generating voiceover with pyttsx3 …")
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 155)
-        engine.setProperty("volume", 1.0)
-        wav_path = OUTPUT_DIR / "voiceover.wav"
-        engine.save_to_file(FULL_SCRIPT, str(wav_path))
-        engine.runAndWait()
-        # Convert to mp3 if ffmpeg available
-        if require("ffmpeg"):
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(wav_path), str(VOICEOVER_PATH)],
-                check=True, capture_output=True,
-            )
-            wav_path.unlink(missing_ok=True)
-        else:
-            VOICEOVER_PATH = wav_path  # use wav directly
-        print(f"  ✓ Voiceover saved to {VOICEOVER_PATH}")
-        return True
-    except Exception as e:
-        print(f"  pyttsx3 failed: {e}")
+    # 2. Local TTS (espeak-ng / pyttsx3)
+    print("\n[2/4] Generating voiceover with local TTS …")
+    raw_wav = OUTPUT_DIR / "voiceover_raw.wav"
+    timed_wav = OUTPUT_DIR / "voiceover_timed.wav"
 
-    print(
-        "\n  WARNING: No TTS engine worked. Video will render without voiceover.\n"
-        "  Use voiceover_script.txt with ElevenLabs to generate audio separately."
+    if not _script_to_wav(raw_wav):
+        print(
+            "\n  WARNING: No TTS engine worked. Video will render without voiceover.\n"
+            "  Open voiceover_script.txt and paste into ElevenLabs for a quality voiceover."
+        )
+        return False
+
+    raw_dur = float(
+        subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(raw_wav)],
+        ).decode().strip()
     )
-    return False
+    print(f"  Raw TTS duration: {raw_dur:.1f}s  → target: {VIDEO_DURATION}s")
+
+    if require("ffmpeg") and abs(raw_dur - VIDEO_DURATION) > 1.0:
+        tempo = raw_dur / VIDEO_DURATION
+        tempo = max(0.5, min(2.0, tempo))  # ffmpeg atempo clamps 0.5–2.0
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(raw_wav),
+                "-filter:a", f"atempo={tempo:.4f}",
+                "-t", str(VIDEO_DURATION),
+                str(timed_wav),
+            ],
+            check=True, capture_output=True,
+        )
+        source_wav = timed_wav
+        print(f"  Speed-adjusted at atempo={tempo:.3f}")
+    else:
+        source_wav = raw_wav
+
+    if require("ffmpeg"):
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(source_wav),
+             "-ar", "44100", "-ab", "192k", str(VOICEOVER_PATH)],
+            check=True, capture_output=True,
+        )
+        print(f"  ✓ Voiceover saved to {VOICEOVER_PATH}")
+    else:
+        source_wav.rename(VOICEOVER_PATH.with_suffix(".wav"))
+        print(f"  ✓ Voiceover saved as WAV (ffmpeg unavailable for mp3 conversion)")
+    return True
 
 
 # ── Step 3 — Render Remotion composition ──────────────────────────────────────
@@ -149,18 +207,32 @@ def render_video() -> bool:
         print("  ERROR: npx not found. Install Node.js 18+ and re-run.")
         return False
 
+    # Locate Chrome / headless shell — check env var, then well-known paths
+    chrome_candidates = [
+        os.environ.get("REMOTION_CHROME_EXECUTABLE", ""),
+        "/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell",
+        "/opt/pw-browsers/chromium",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ]
+    chrome_exe = next((p for p in chrome_candidates if p and Path(p).exists()), None)
+
+    cmd = [
+        npx, "remotion", "render",
+        "src/index.ts",
+        "NesraWellness",
+        str(RAW_VIDEO_PATH),
+        "--codec=h264",
+    ]
+    if chrome_exe:
+        cmd += [f"--browser-executable={chrome_exe}"]
+        print(f"  Using Chrome: {chrome_exe}")
+    else:
+        print("  WARNING: No Chrome binary found — Remotion will try to download one.")
+
     try:
-        run(
-            [
-                npx, "remotion", "render",
-                "src/index.ts",
-                "NesraWellness",
-                str(RAW_VIDEO_PATH),
-                "--codec=h264",
-                "--log=verbose",
-            ],
-            cwd=SCRIPT_DIR,
-        )
+        run(cmd, cwd=SCRIPT_DIR)
         print(f"  ✓ Raw video saved to {RAW_VIDEO_PATH}")
         return True
     except subprocess.CalledProcessError as e:
@@ -173,7 +245,10 @@ def render_video() -> bool:
 def mix_audio(has_voiceover: bool) -> None:
     print("\n[4/4] Mixing audio …")
 
-    if not require("ffmpeg"):
+    ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    has_ffmpeg = Path(ffmpeg_bin).exists()
+
+    if not has_ffmpeg:
         print("  ffmpeg not found — skipping audio mix.")
         if RAW_VIDEO_PATH.exists():
             shutil.copy(RAW_VIDEO_PATH, FINAL_VIDEO_PATH)
@@ -189,7 +264,9 @@ def mix_audio(has_voiceover: bool) -> None:
         print("  Raw video not found — cannot mix audio.")
         return
 
-    if not has_voiceover or not VOICEOVER_PATH.exists():
+    # Accept .mp3 or .wav voiceover
+    vo_path = VOICEOVER_PATH if VOICEOVER_PATH.exists() else VOICEOVER_PATH.with_suffix(".wav")
+    if not has_voiceover or not vo_path.exists():
         shutil.copy(RAW_VIDEO_PATH, FINAL_VIDEO_PATH)
         print(f"  No voiceover — copying raw video to {FINAL_VIDEO_PATH}.")
         return
@@ -210,9 +287,9 @@ def mix_audio(has_voiceover: bool) -> None:
             "[vo][bg]amix=inputs=2:duration=first[audio]"
         )
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_bin, "-y",
             "-i", str(RAW_VIDEO_PATH),
-            "-i", str(VOICEOVER_PATH),
+            "-i", str(vo_path),
             "-i", str(music_file),
             "-filter_complex", filter_complex,
             "-map", "0:v",
@@ -227,13 +304,14 @@ def mix_audio(has_voiceover: bool) -> None:
         print("  No background_music.mp3 found — merging voiceover only.")
         print("  (Place a royalty-free lofi track at background_music.mp3 and re-run for music.)")
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_bin, "-y",
             "-i", str(RAW_VIDEO_PATH),
-            "-i", str(VOICEOVER_PATH),
+            "-i", str(vo_path),
+            "-map", "0:v:0",   # video from rendered file
+            "-map", "1:a:0",   # audio from voiceover (not Remotion's silent track)
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "192k",
-            "-shortest",
             str(FINAL_VIDEO_PATH),
         ]
 
