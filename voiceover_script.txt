@@ -1,0 +1,29 @@
+NESRA MENTAL WELLNESS — VOICEOVER SCRIPT
+Paste this into ElevenLabs. Recommended voice: calm, warm, young female or male.
+Recommended settings: Stability 0.45, Similarity 0.75, Style Exaggeration 0.20
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5 signs you're mentally exhausted... that nobody talks about.
+
+Number one. You're tired — no matter how much you sleep. Eight hours. Nine hours. Still exhausted. That's not laziness. That's your mind running on empty.
+
+Number two. Small decisions feel impossible. What to eat. What to wear. What to reply. When your brain is burnt out, even tiny choices feel overwhelming.
+
+Number three. You've stopped enjoying things you used to love. Not sad exactly. Just... numb. That's emotional exhaustion — not depression. There's a difference.
+
+Number four. You're irritable for no reason. Snapping at people who don't deserve it. Feeling on edge constantly. Your nervous system is overloaded.
+
+Number five. You keep saying you're fine. But you're not fine. You're just tired of explaining it.
+
+If any of these hit — your mind needs attention, not just rest. Start small. Check in with yourself daily. Even five minutes of journaling changes things more than you'd think. Nesra is a free app that helps you do exactly that. Link in bio.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TIMING NOTES (for ElevenLabs segment alignment):
+  Hook:    0 – 3 s
+  Point 1: 3 – 10 s
+  Point 2: 10 – 18 s
+  Point 3: 18 – 26 s
+  Point 4: 26 – 34 s
+  Point 5: 34 – 42 s
+  Outro:   42 – 52 s
+Total target duration: ~52 seconds
